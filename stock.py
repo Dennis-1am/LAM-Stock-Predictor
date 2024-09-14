@@ -29,22 +29,96 @@ class Stock:
         data = self.stochastic_oscillator(data)
         data = self.william_percent_r(data)
         data = self.on_balance_volume(data)
-        data = self.moving_average(data)
+        data = self.boillinger_bands(data)
+        data = self.donchian_channel(data)
+        data = self.TSI(data)
+        data = self.MFI(data)
+        data = self.average_true_range(data)
         data = self.target(data)
         
         data.to_json(f'data/{ticker}.json')
-        predicators = ['RSI_Signal', 'MACD_Signal', 'Price_Rate_Of_Change', 'Stochastic_Signal_Fast', 'Stochastic_Signal_Slow', 'William_Percent_R_Signal', 'On_Balance_Volume_Signal', 'SMA_Signal','Target']
+        predicators = [
+            'MFI',
+            'Price_Rate_Of_Change', 
+            'TSI',
+            'ATR',
+            'Stochastic_Signal_Fast', 
+            'William_Percent_R_Signal', 
+            'On_Balance_Volume_Signal', 
+            'Donchian_Channel_Signal', 
+            'BB_Signal', 
+            'Stochastic_Signal_Slow', 
+            'RSI_Signal', 
+            'MACD_Signal', 
+            'Target'
+            ]
         data.dropna(inplace=True)
         self.data = data[predicators]
         
         return self.data
     
-    def moving_average(self, data: pd.DataFrame) -> pd.DataFrame:
-        data['SMA_50'] = data['Close'].rolling(window=50).mean()
-        data['SMA_200'] = data['Close'].rolling(window=200).mean()
+    def average_true_range(self, data: pd.DataFrame) -> pd.DataFrame:
+        data['High_Low'] = data['High'] - data['Low']
+        data['High_Close'] = (data['High'] - data['Close'].shift(1)).abs()
+        data['Low_Close'] = (data['Low'] - data['Close'].shift(1)).abs()
         
-        data['SMA_Signal'] = np.where(data['SMA_50'] > data['SMA_200'], 1, np.where(data['SMA_50'] < data['SMA_200'], -1, 0))
-            
+        data['TR'] = data[['High_Low', 'High_Close', 'Low_Close']].max(axis=1)
+        
+        data['ATR'] = data['TR'].rolling(window=14).mean()
+        
+        return data
+    
+    def MFI(self, data: pd.DataFrame) -> pd.DataFrame:
+        data['Typical_Price'] = (data['High'] + data['Low'] + data['Close']) / 3
+        data['Raw_Money_Flow'] = data['Typical_Price'] * data['Volume']
+        
+        data['Positive_Flow'] = np.where(data['Typical_Price'] > data['Typical_Price'].shift(1), data['Raw_Money_Flow'], 0)
+        data['Negative_Flow'] = np.where(data['Typical_Price'] < data['Typical_Price'].shift(1), data['Raw_Money_Flow'], 0)
+        
+        data['Positive_Flow'] = data['Positive_Flow'].rolling(window=14).sum()
+        data['Negative_Flow'] = data['Negative_Flow'].rolling(window=14).sum()
+        
+        data['Money_Ratio'] = data['Positive_Flow'] / data['Negative_Flow']
+        data['MFI'] = 100 - (100 / (1 + data['Money_Ratio']))
+        
+        return data
+    
+    def TSI(self, data: pd.DataFrame) -> pd.DataFrame:
+        data['Close_1'] = data['Close'].shift(1)
+        data['Close_2'] = data['Close'].shift(2)
+        
+        data['PC'] = data['Close'] - data['Close_1']
+        data['PC_1'] = data['Close_1'] - data['Close_2']
+        
+        data['PC'] = data['PC'].fillna(0)
+        data['PC_1'] = data['PC_1'].fillna(0)
+        
+        data['PC'] = data['PC'].abs()
+        data['PC_1'] = data['PC_1'].abs()
+        
+        data['EPC'] = data['PC'].ewm(span=25, adjust=False).mean()
+        data['EPC_1'] = data['PC_1'].ewm(span=25, adjust=False).mean()
+        
+        data['TSI'] = 100 * (data['EPC'] / data['EPC_1'])
+        
+        return data
+    
+    def donchian_channel(self, data: pd.DataFrame) -> pd.DataFrame:
+        data['Highest_High'] = data['High'].rolling(window=20).max()
+        data['Lowest_Low'] = data['Low'].rolling(window=20).min()
+        data['Middle_Line'] = (data['Highest_High'] + data['Lowest_Low']) / 2
+        
+        data['Donchian_Channel_Signal'] = np.where(data['Close'] > data['Middle_Line'], 1, np.where(data['Close'] < data['Middle_Line'], -1, 0))
+        
+        return data
+    
+    def boillinger_bands(self, data: pd.DataFrame) -> pd.DataFrame:
+        data['Middle_Band'] = data['Close'].rolling(window=20).mean()
+        data['Upper_Band'] = data['Middle_Band'] + 2 * data['Close'].rolling(window=20).std()
+        data['Lower_Band'] = data['Middle_Band'] - 2 * data['Close'].rolling(window=20).std()
+        
+        data['BB_Signal'] = np.where(data['Close'] > data['Upper_Band'], -1, np.where(data['Close'] < data['Lower_Band'], 1, 0))
+        
         return data
     
     def rsi(self, data: pd.DataFrame) -> pd.DataFrame:
@@ -85,7 +159,7 @@ class Stock:
         return data
 
     def price_rate_of_change(self, data: pd.DataFrame) -> pd.DataFrame:
-        data['Price_Rate_Of_Change'] = (data['Close'] - data['Close'].shift(7)) / data['Close'].shift(7) * 100
+        data['Price_Rate_Of_Change'] = (data['Close'] - data['Close'].shift(14)) / data['Close'].shift(14) * 100
         
         return data
 

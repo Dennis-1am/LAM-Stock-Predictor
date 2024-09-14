@@ -1,7 +1,9 @@
 import stock as Stock
 import numpy as np
+import joblib as joblib
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.metrics import precision_score, recall_score, roc_auc_score
+from sklearn.model_selection import TimeSeriesSplit
 from alive_progress import alive_bar
 
 
@@ -10,140 +12,91 @@ class Modeling:
         self.stock = Stock.Stock()
         self.ticker = ''
         
-    def train_test_split(self, data, train_size, validation_size):
-        '''
-        Split the data into train, test, and validation set
-        '''
+    def run(self, model = RandomForestClassifier, data = None):
         
-        train_set = data[:train_size]
-        test_set = data[train_size:validation_size]
-        validation_set = data[validation_size:]
+        data = self.stock.get_stock_data(self.ticker, '10y')
+
+        tscv = TimeSeriesSplit(n_splits = 10, max_train_size=364*2, test_size=90)
         
-        return train_set, test_set, validation_set
-    
-    def RF_model(self, train_set, n_estimators, max_depth, min_samples_split=2, min_samples_leaf=1):
-        '''
-        Random Forest model
-        '''
+        precision = 0
+        recall = 0
+        roc_auc = 0
         
-        rf_model = RandomForestClassifier(
-            n_estimators=n_estimators, 
-            max_depth=max_depth, 
-            min_samples_split=min_samples_split, 
-            min_samples_leaf=min_samples_leaf,
-            random_state=42
-            )
+        for train_index, test_index in tscv.split(data):
+            X_train, X_test = data.iloc[train_index], data.iloc[test_index]
+            
+            y_train = X_train['Target']
+            y_test = X_test['Target']
+            
+            X_train.drop(columns=['Target'], inplace=True)
+            X_test.drop(columns=['Target'], inplace=True)
+            
+            model.fit(X_train, y_train)
+            y_pred = model.predict_proba(X_test)[:, 1]
+            y_pred = np.where(y_pred > 0.7, 1, 0)
+            
+            precision += precision_score(y_test, y_pred)
+            recall += recall_score(y_test, y_pred)
+            roc_auc += roc_auc_score(y_test, y_pred)
+            
+        return precision/10, recall/10, roc_auc/10, model
         
-        X_train = train_set.drop('Target', axis=1)
-        y_train = train_set['Target']
-        
-        rf_model.fit(X_train, y_train)
-        
-        return rf_model
-    
-    def evaluate_model(self, model, validation_set, start=1000, step=90):
-        '''
-        Evaluate the model
-        '''
-        
-        precision = []
-        recall = []
-        roc_auc = []
-        
-        with alive_bar(len(validation_set[start::step])) as bar:
-            for i in range(start, len(validation_set)-1, step):
-                X_validation = validation_set.drop('Target', axis=1)[:i]
-                y_validation = validation_set['Target'][:i]
-                
-                y_pred = model.predict_proba(X_validation)
-                y_pred = y_pred[:, 1]
-                y_pred = np.where(y_pred > 0.6, 1, 0)
-                
-                precision.append(precision_score(y_validation, y_pred))
-                recall.append(recall_score(y_validation, y_pred))
-                roc_auc.append(roc_auc_score(y_validation, y_pred))
-                
-                bar()
-                
-        precision = sum(precision) / len(precision)
-        recall = sum(recall) / len(recall)
-        roc_auc = sum(roc_auc) / len(roc_auc)
-        
-        return precision, recall, roc_auc
-    
-    def hyperparameter_tuning(self, train_set, test_set, start, step):
-        hyperparameter = {
-            'n_estimators': [10, 50, 100],
-            'max_depth': [10, 20, 30, 40, 50, 60, 70, 80, 90, 100, 110, None],
-            'min_samples_split': [2, 5, 10, 20],
-            'min_samples_leaf': [1, 2, 4, 10, 30]
+    def hyperparameter_tuning(self):
+
+        hyperparameters = {
+            'n_estimators': [100, 130],
+            'max_depth': [10, 20, 30, 40, 50, 60, 70, 80, 90, 100],
+            'bootstrap': [True, False]
         }
         
-        best_model = None
+        best_precision = 0
+        best_recall = 0
         best_roc_auc = 0
+        best_model = None
         
-        with alive_bar(len(hyperparameter['n_estimators']) * len(hyperparameter['max_depth']) * len(hyperparameter['min_samples_split']) * len(hyperparameter['min_samples_leaf']) * len(test_set[start::step])) as bar:
-            for n_estimators in hyperparameter['n_estimators']:
-                for max_depth in hyperparameter['max_depth']:
-                    for min_samples_split in hyperparameter['min_samples_split']:
-                        for min_samples_leaf in hyperparameter['min_samples_leaf']:
-                            
-                            model = self.RF_model(train_set, n_estimators, max_depth, min_samples_split, min_samples_leaf)
-                            
-                            roc_auc_scores = []
-                            
-                            for i in range(start, len(test_set)-1, step):
-                                X_test = test_set.drop('Target', axis=1)[:i]
-                                y_test = test_set['Target'][:i]
-                                
-                                y_pred = model.predict_proba(X_test)[:, 1]
-                                y_pred = np.where(y_pred > 0.6, 1, 0)
-                                roc_auc_scores.append(roc_auc_score(y_test, y_pred))
-                                
-                                bar()
-                                
-                            roc_auc = sum(roc_auc_scores) / len(roc_auc_scores)
-                                
-                            if roc_auc > best_roc_auc:
-                                best_roc_auc = roc_auc
-                                best_model = model
-                                best_hyperparameter = {
-                                    'n_estimators': n_estimators,
-                                    'max_depth': max_depth,
-                                    'min_samples_split': min_samples_split,
-                                    'min_samples_leaf': min_samples_leaf
-                                }
-                                
-                                print(f'Best ROC AUC: {best_roc_auc}\nBest Hyperparameter: {best_hyperparameter}')
-                            
-                                
-        return best_model, best_hyperparameter
-    
-    def run(self, ticker='AAPL', period='max', start=1000, step=90):
-        self.init()
-        self.ticker = 'AAPL'
+        best_params = {}
         
-        data = self.stock.get_stock_data(self.ticker, period)
-        
-        train_size = int(len(data) * 0.8)
-        validation_size = int(len(data) * 0.9)
-        
-        print(train_size, validation_size, len(data))
-        
-        train_set, test_set, validation_set = self.train_test_split(data, train_size, validation_size)
-        
-        model, hyperparameter = self.hyperparameter_tuning(train_set, test_set, start, step)
-        
-        start = len(data) - validation_size*0.9
-        step = 90
-        
-        precision, recall, roc_auc = self.evaluate_model(model, validation_set, start, step)
-        
-        print(f'Precision: {precision}\nRecall: {recall}\nROC AUC: {roc_auc}')
-        
-        return model, hyperparameter
-    
-    
+        with alive_bar(len(hyperparameters['n_estimators']) * len(hyperparameters['max_depth']) * len(hyperparameters['bootstrap'])) as bar:
+            for n_estimators in hyperparameters['n_estimators']:
+                for max_depth in hyperparameters['max_depth']:
+                    for bootstrap in hyperparameters['bootstrap']:
+                        model = RandomForestClassifier(n_estimators=n_estimators, max_depth=max_depth, bootstrap=bootstrap, random_state=42)
+                        precision, recall, roc_auc, model = self.run(model)
+                        if precision > best_precision and recall > best_recall:
+                            best_precision = precision
+                            best_recall = recall
+                            best_roc_auc = roc_auc
+                            best_model = model
+                            best_params = {
+                                'n_estimators': n_estimators,
+                                'max_depth': max_depth,
+                                'bootstrap': bootstrap
+                            }
+                            print(f'Best Precision: {best_precision}')
+                            print(f'Best Recall: {best_recall}')
+                            print(f'Best ROC AUC: {best_roc_auc}')
+                            print(f'Best Params: {best_params}')
+                        bar()
+                        
+        return best_precision, best_recall, best_roc_auc, best_model, best_params
+                    
+
 if __name__ == '__main__':
     model = Modeling()
-    model.run()
+    model.init()
+    model.ticker = 'AMZN'
+    best_precision, best_recall, best_roc_auc, best_model, best_params = model.hyperparameter_tuning()
+    
+    # save the model
+    joblib.dump(best_model, 'model.pkl')
+    
+    model = joblib.load('model.pkl')
+    
+    feature_importance = model.feature_importances_
+    feature_names = model.feature_names_in_
+    
+    feature_importance = sorted(zip(feature_names, feature_importance), key=lambda x: x[1], reverse=True)
+    
+    for feature in feature_importance:
+        print(f'{feature[0]}: {feature[1]}')
+    
